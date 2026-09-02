@@ -52,6 +52,7 @@ tmux key names like `Space`, `Escape`, `C-c`, `Left`, `Right` work):
 ```bash
 $D keys d              # hold-equivalent tap: move right
 $D keys a               # move left
+$D keys j                # run (held for one input window, like the other keys)
 $D keys Space            # jump
 ```
 
@@ -105,9 +106,9 @@ build it from untrusted input.
 cargo run --release
 ```
 
-Controls: `A`/`Left` move left, `D`/`Right` move right, `Space` jump,
-`Q`/`Esc`/`Ctrl+C` quit. Terminal must be at least 20x10 or the game shows
-a "too small" message instead of the viewport.
+Controls: `A`/`Left` move left, `D`/`Right` move right, `J` hold to run,
+`Space` jump, `Q`/`Esc`/`Ctrl+C` quit. Terminal must be at least 20x10 or the
+game shows a "too small" message instead of the viewport.
 
 ## Test
 
@@ -116,7 +117,7 @@ a "too small" message instead of the viewport.
 ```
 
 Runs `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D
-warnings`, `cargo test --all` (78 tests, headless, no TTY needed), and
+warnings`, `cargo test --all` (99 tests, headless, no TTY needed), and
 `cargo build --release`. All currently pass.
 
 ## Gotchas

@@ -12,6 +12,9 @@ fn map_key(code: KeyCode) -> Option<GameKey> {
         KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') => Some(GameKey::Left),
         KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') => Some(GameKey::Right),
         KeyCode::Char(' ') => Some(GameKey::Jump),
+        // Run is a letter key, not Shift: a standalone modifier press/release is
+        // not reported under the enhancement flags this game enables.
+        KeyCode::Char('j') | KeyCode::Char('J') => Some(GameKey::Run),
         _ => None,
     }
 }
@@ -102,7 +105,24 @@ mod tests {
         assert_eq!(map_key(KeyCode::Left), Some(GameKey::Left));
         assert_eq!(map_key(KeyCode::Char('D')), Some(GameKey::Right));
         assert_eq!(map_key(KeyCode::Char(' ')), Some(GameKey::Jump));
+        assert_eq!(map_key(KeyCode::Char('j')), Some(GameKey::Run));
+        assert_eq!(map_key(KeyCode::Char('J')), Some(GameKey::Run));
         assert_eq!(map_key(KeyCode::Char('z')), None);
+    }
+
+    #[test]
+    fn the_run_key_does_not_collide_with_quit_or_movement() {
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('d'),
+            KeyCode::Char(' '),
+            KeyCode::Left,
+            KeyCode::Right,
+        ] {
+            assert_ne!(map_key(code), Some(GameKey::Run));
+        }
+        assert!(!is_quit(&KeyEvent::from(KeyCode::Char('j'))));
+        assert!(!is_quit(&KeyEvent::from(KeyCode::Char('J'))));
     }
 
     #[test]
@@ -124,10 +144,12 @@ mod tests {
         let mut pump = EventPump::new(HoldMode::Explicit);
         pump.handle(press(KeyCode::Char('d')), 0.0);
         pump.handle(press(KeyCode::Char(' ')), 0.0);
+        pump.handle(press(KeyCode::Char('j')), 0.0);
         pump.handle(Event::Resize(100, 30), 0.0);
 
         let state = pump.finish_frame(0.0);
         assert!(state.move_right);
+        assert!(state.run_held);
         assert!(state.jump_held);
         assert!(state.jump_pressed);
         assert!(!state.quit_requested);

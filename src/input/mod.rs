@@ -9,9 +9,13 @@ pub enum GameKey {
     Left,
     Right,
     Jump,
+    Run,
 }
 
-const KEY_COUNT: usize = 3;
+const KEY_COUNT: usize = 4;
+
+/// Every key the collector tracks held state for.
+const ALL_KEYS: [GameKey; KEY_COUNT] = [GameKey::Left, GameKey::Right, GameKey::Jump, GameKey::Run];
 
 /// How key-release information reaches us.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +38,8 @@ pub const HOLD_TIMEOUT: f64 = 0.15;
 pub struct InputState {
     pub move_left: bool,
     pub move_right: bool,
+    /// Level state, not an edge: raises the horizontal speed cap while down.
+    pub run_held: bool,
     pub jump_held: bool,
     /// Latched rising edge; survives frames in which no fixed step ran.
     pub jump_pressed: bool,
@@ -120,7 +126,7 @@ impl InputCollector {
         if self.mode != HoldMode::Timeout {
             return;
         }
-        for key in [GameKey::Left, GameKey::Right, GameKey::Jump] {
+        for key in ALL_KEYS {
             let index = key as usize;
             if self.held[index] && now - self.last_seen[index] >= HOLD_TIMEOUT {
                 self.set_held(key, false);
@@ -135,6 +141,7 @@ impl InputCollector {
         InputState {
             move_left: self.held[GameKey::Left as usize],
             move_right: self.held[GameKey::Right as usize],
+            run_held: self.held[GameKey::Run as usize],
             jump_held: self.held[GameKey::Jump as usize],
             jump_pressed: self.jump_pressed_latch,
             jump_released: self.jump_released_latch,
@@ -185,6 +192,30 @@ mod tests {
         assert!(collector.finish_frame(0.0).move_left);
         assert!(collector.finish_frame(HOLD_TIMEOUT - 0.01).move_left);
         assert!(!collector.finish_frame(HOLD_TIMEOUT).move_left);
+    }
+
+    #[test]
+    fn run_is_level_state_with_no_edge_latch() {
+        let mut collector = InputCollector::new(HoldMode::Explicit);
+        collector.on_press(GameKey::Run, 0.0);
+        let state = collector.finish_frame(0.0);
+        assert!(state.run_held);
+        assert!(!state.jump_pressed, "run must not latch a jump edge");
+
+        collector.on_release(GameKey::Run);
+        assert!(!collector.finish_frame(0.016).run_held);
+        assert!(
+            !collector.finish_frame(0.016).jump_released,
+            "run must not latch a jump edge"
+        );
+    }
+
+    #[test]
+    fn timeout_mode_infers_a_run_release_when_repeats_stop() {
+        let mut collector = InputCollector::new(HoldMode::Timeout);
+        collector.on_press(GameKey::Run, 0.0);
+        assert!(collector.finish_frame(HOLD_TIMEOUT - 0.01).run_held);
+        assert!(!collector.finish_frame(HOLD_TIMEOUT).run_held);
     }
 
     #[test]
