@@ -19,6 +19,10 @@ pub struct PhysicsConfig {
     pub run_accel: f32,
     pub ground_decel: f32,
     pub air_accel: f32,
+    /// Airborne deceleration with no direction held. Far weaker than
+    /// [`PhysicsConfig::ground_decel`] so horizontal momentum carries through a
+    /// jump instead of evaporating mid-arc.
+    pub air_decel: f32,
     pub gravity: f32,
     /// Negative: upward.
     pub jump_velocity: f32,
@@ -42,6 +46,7 @@ impl Default for PhysicsConfig {
             run_accel: 55.0,
             ground_decel: 60.0,
             air_accel: 30.0,
+            air_decel: 4.0,
             gravity: 30.0,
             jump_velocity: -18.0,
             max_fall_speed: 40.0,
@@ -71,7 +76,7 @@ fn apply_horizontal(player: &mut Player, input: &InputState, cfg: &PhysicsConfig
         let decel = if player.grounded {
             cfg.ground_decel
         } else {
-            cfg.air_accel
+            cfg.air_decel
         };
         player.velocity.x = move_toward(player.velocity.x, 0.0, decel * dt);
         return;
@@ -764,6 +769,43 @@ mod tests {
         assert!(
             softened_steps > 0,
             "the cut arc never passed through the apex band"
+        );
+    }
+
+    #[test]
+    fn airborne_idle_deceleration_is_gentler_than_on_the_ground() {
+        let cfg = PhysicsConfig::default();
+        assert!(
+            cfg.air_decel < cfg.ground_decel,
+            "letting go mid-air must not brake as hard as skidding on the ground"
+        );
+    }
+
+    #[test]
+    fn releasing_direction_mid_air_carries_momentum_through_the_jump() {
+        let cfg = PhysicsConfig::default();
+        let map = open_map();
+        let mut player = Player::new(Vec2::new(8.0, 4.0));
+        player.velocity.x = cfg.max_walk_speed;
+
+        // 0.6s is a realistic slice of one jump's airtime. Before the air_decel
+        // split this reused air_accel (30.0) and hit exactly zero in ~0.267s.
+        let steps = (0.6 / FIXED_DT) as u32;
+        let mut previous = player.velocity.x;
+        for _ in 0..steps {
+            step_player(&mut player, &map, &idle(), &cfg, FIXED_DT);
+            assert!(!player.grounded, "the test must stay in the air");
+            assert!(
+                player.velocity.x < previous,
+                "airborne decay must stay monotonic"
+            );
+            previous = player.velocity.x;
+        }
+
+        assert!(
+            player.velocity.x >= cfg.max_walk_speed * 0.65,
+            "expected most of the entry speed to survive, kept {}",
+            player.velocity.x / cfg.max_walk_speed
         );
     }
 
