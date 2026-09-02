@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp/oauth"
+    },
+    "github": {
+      "type": "stdio",
+      "command": "/bin/zsh",
+      "args": [
+        "-lc",
+        "export GITHUB_PERSONAL_ACCESS_TOKEN=\"$(gh auth token)\"; export GITHUB_READ_ONLY=1; export GITHUB_TOOLSETS=\"context,repos,issues,pull_requests,actions\"; exec github-mcp-server stdio"
+      ],
+      "env": {}
+    }
+  }
+}

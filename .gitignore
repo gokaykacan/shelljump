@@ -1,0 +1,12 @@
+/target
+.DS_Store
+*.log
+
+.env
+.env.*
+!.env.example
+
+.claude/settings.local.json
+
+*.swp
+*.tmp
