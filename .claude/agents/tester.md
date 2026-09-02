@@ -37,6 +37,33 @@ For gameplay systems also inspect and test:
 - state transitions
 - frame-time edge cases
 
+Required runtime smoke test:
+
+If the change touches gameplay, input, rendering, HUD, camera, or terminal lifecycle, you must also run a real runtime smoke test using the `run-shelljump` skill.
+
+Run it after ./scripts/quality-gate.sh has passed.
+
+Not before it. Not instead of it.
+
+These are two separate layers:
+
+- deterministic quality gate: fmt, clippy, cargo test, release build
+- interactive runtime validation: tmux-driven live smoke test of the release binary
+
+Never modify ./scripts/quality-gate.sh to include the runtime smoke test. The layers stay independently run.
+
+Cover at minimum:
+
+- launch target/release/shelljump through the driver
+- exercise movement and jump
+- exercise the specific behavior that changed
+- verify quit paths still exit cleanly with no orphaned process
+- verify resize handling and the too-small-terminal fallback if camera, rendering, or terminal lifecycle was touched
+
+Mechanics, driver commands and gotchas live in `.claude/skills/run-shelljump/SKILL.md`. Follow them rather than driving the binary by hand.
+
+A runtime smoke test failure is a FAIL, even when the quality gate passed.
+
 You may add or improve tests.
 
 Do not change production behavior merely to make a failing test pass.

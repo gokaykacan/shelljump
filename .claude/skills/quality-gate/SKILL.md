@@ -31,6 +31,8 @@ For renderer changes inspect terminal lifecycle, resize behavior and hot-path al
 
 If coverage is inadequate, add appropriate tests.
 
+Tester policy in `.claude/agents/tester.md` may additionally require a runtime smoke test.
+
 Return exactly:
 
 TEST_STATUS: PASS
