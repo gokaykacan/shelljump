@@ -70,6 +70,11 @@ impl PhysicsConfig {
 }
 
 fn apply_horizontal(player: &mut Player, input: &InputState, cfg: &PhysicsConfig, dt: f32) {
+    debug_assert!(
+        !(input.move_left && input.move_right),
+        "resolve_move_keys must collapse opposing directions; both held reaches \
+         the direction == 0 branch and reads as a dead stop"
+    );
     let direction = i32::from(input.move_right) - i32::from(input.move_left);
 
     if direction == 0 {
@@ -806,6 +811,26 @@ mod tests {
             player.velocity.x >= cfg.max_walk_speed * 0.65,
             "expected most of the entry speed to survive, kept {}",
             player.velocity.x / cfg.max_walk_speed
+        );
+    }
+
+    /// Physics deliberately does not resolve the conflict itself: the tie-break
+    /// needs the input layer's recency data. This only guarantees the mistake
+    /// fails loudly instead of silently reading as a dead stop.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "resolve_move_keys must collapse opposing directions")]
+    fn opposing_directions_trip_the_debug_assert() {
+        let both = InputState {
+            move_left: true,
+            move_right: true,
+            ..InputState::default()
+        };
+        apply_horizontal(
+            &mut grounded_player(),
+            &both,
+            &PhysicsConfig::default(),
+            FIXED_DT,
         );
     }
 

@@ -17,6 +17,23 @@ use crate::input::HoldMode;
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ENHANCED: AtomicBool = AtomicBool::new(false);
 
+/// Keyboard protocol features requested from a Kitty-protocol terminal.
+///
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES` is load-bearing, not a nicety:
+/// `REPORT_EVENT_TYPES` alone only produces repeat/release events for keys that
+/// already travel as escape sequences. Every key this game binds except the
+/// arrows is plain text — Space, `a`, `d`, `j` — so without it the input
+/// collector runs in [`HoldMode::Explicit`], where it trusts releases
+/// completely, while no release for those keys ever arrives. The first press of
+/// each would latch down for the whole session.
+///
+/// `examples/input_probe.rs` pushes this same constant, so what the probe
+/// measures is what the game will actually see.
+pub const KEYBOARD_ENHANCEMENT_FLAGS: KeyboardEnhancementFlags =
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
+
 /// Owns the terminal's altered state. Dropping it restores the terminal.
 pub struct TerminalGuard {
     hold_mode: HoldMode,
@@ -47,10 +64,7 @@ impl TerminalGuard {
         if enhanced {
             execute!(
                 out,
-                PushKeyboardEnhancementFlags(
-                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                )
+                PushKeyboardEnhancementFlags(KEYBOARD_ENHANCEMENT_FLAGS)
             )?;
             ENHANCED.store(true, Ordering::SeqCst);
         }

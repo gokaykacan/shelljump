@@ -12,8 +12,10 @@ fn map_key(code: KeyCode) -> Option<GameKey> {
         KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') => Some(GameKey::Left),
         KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') => Some(GameKey::Right),
         KeyCode::Char(' ') => Some(GameKey::Jump),
-        // Run is a letter key, not Shift: a standalone modifier press/release is
-        // not reported under the enhancement flags this game enables.
+        // Run is a letter key, not Shift. A bare modifier press/release reaches
+        // us only on terminals running the Kitty protocol; everywhere else it
+        // produces no event at all, so a Shift binding would silently do
+        // nothing on exactly the terminals that need Run most.
         KeyCode::Char('j') | KeyCode::Char('J') => Some(GameKey::Run),
         _ => None,
     }
