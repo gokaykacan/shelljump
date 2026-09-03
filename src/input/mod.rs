@@ -28,17 +28,23 @@ pub enum HoldMode {
     Timeout,
 }
 
-/// How long input must be *entirely* silent before [`HoldMode::Timeout`] infers
-/// that every held key was released.
+/// How long a key may go without an event of its own before [`HoldMode::Timeout`]
+/// infers that it was released.
 ///
 /// The binding constraint is not the auto-repeat interval but repeat *ownership*:
 /// the terminal delivers a single repeat stream, so pressing a second key moves
 /// repeats to it and starves the first key's refresh for as long as the second
-/// key stays down. A per-key window can therefore never be long enough — holding
-/// Jump through a jump starves the direction key for the whole flight. So the
-/// window is measured against activity from *any* key: while events keep
-/// arriving, the OS is still servicing input and no release can be inferred.
-/// Only total silence is evidence of a release.
+/// key stays down. A plain per-key window is therefore never long enough on its
+/// own — holding Jump through a jump starves the direction key for the whole
+/// flight.
+///
+/// So every key carries a durable absolute deadline instead. Its own event buys
+/// one window; being masked by another key's press pushes its deadline out to
+/// *twice* the window from that press, so a starved key always retains a full
+/// window measured from the point where the masking key's own deadline lapses.
+/// That gives the terminal a fair chance to resume the masked key's repeats
+/// before the key is written off, without tying the two keys' fates together
+/// the way a single global silence timer does.
 pub const HOLD_TIMEOUT: f64 = 0.25;
 
 /// One frame of input, consumed by the simulation.
@@ -74,8 +80,9 @@ pub struct InputCollector {
     held: [bool; KEY_COUNT],
     /// Per-key recency, used only to break direction conflicts.
     last_seen: [f64; KEY_COUNT],
-    /// Most recent event from any key, used only to time hold expiry.
-    last_activity: f64,
+    /// Absolute per-key deadline past which a hold is inferred to have ended.
+    /// Consulted only in [`HoldMode::Timeout`]; see [`HOLD_TIMEOUT`].
+    expiry_at: [f64; KEY_COUNT],
     jump_pressed_latch: bool,
     jump_released_latch: bool,
     quit: bool,
@@ -88,7 +95,7 @@ impl InputCollector {
             mode,
             held: [false; KEY_COUNT],
             last_seen: [f64::NEG_INFINITY; KEY_COUNT],
-            last_activity: f64::NEG_INFINITY,
+            expiry_at: [f64::NEG_INFINITY; KEY_COUNT],
             jump_pressed_latch: false,
             jump_released_latch: false,
             quit: false,
@@ -114,7 +121,17 @@ impl InputCollector {
     /// Records a press or auto-repeat at `now` seconds since application start.
     pub fn on_press(&mut self, key: GameKey, now: f64) {
         self.last_seen[key as usize] = now;
-        self.last_activity = now;
+        // Every other held key just lost the repeat stream to this one, so grant
+        // it a full window beyond where this key's own deadline lands. `max`
+        // keeps same-timestamp or out-of-order events from walking a deadline
+        // backwards.
+        for other in ALL_KEYS {
+            let index = other as usize;
+            if other != key && self.held[index] {
+                self.expiry_at[index] = self.expiry_at[index].max(now + 2.0 * HOLD_TIMEOUT);
+            }
+        }
+        self.expiry_at[key as usize] = self.expiry_at[key as usize].max(now + HOLD_TIMEOUT);
         self.set_held(key, true);
     }
 
@@ -135,29 +152,32 @@ impl InputCollector {
         self.resized = Some((columns, rows));
     }
 
-    /// Drops every inferred hold once input has been silent for [`HOLD_TIMEOUT`].
-    /// Staleness is global rather than per-key: see [`HOLD_TIMEOUT`].
+    /// Drops each inferred hold once its own deadline has elapsed. Deadlines are
+    /// per-key and durable rather than a shared silence timer: see
+    /// [`HOLD_TIMEOUT`].
     fn expire_stale_holds(&mut self, now: f64) {
         if self.mode != HoldMode::Timeout {
             return;
         }
-        if now - self.last_activity < HOLD_TIMEOUT {
-            return;
-        }
         for key in ALL_KEYS {
-            // Deliberately bypasses `set_held`: an inferred expiry is a guess,
-            // not an observed release, and must never latch the jump cut.
-            self.held[key as usize] = false;
+            let index = key as usize;
+            if self.held[index] && now >= self.expiry_at[index] {
+                // Deliberately bypasses `set_held`: an inferred expiry is a
+                // guess, not an observed release, and must never latch the
+                // jump cut.
+                self.held[index] = false;
+            }
         }
     }
 
-    /// Both directions can read as held in [`HoldMode::Timeout`] when the player
-    /// taps one within [`HOLD_TIMEOUT`] of the other, which would otherwise
-    /// cancel to a dead stop. The most recently seen key wins.
+    /// Both directions reading as held would otherwise cancel to a dead stop:
+    /// in [`HoldMode::Timeout`] because a tap lingers for [`HOLD_TIMEOUT`], and
+    /// in [`HoldMode::Explicit`] because the player really is holding both. The
+    /// most recently seen key wins in either case.
     fn resolve_move_keys(&self) -> (bool, bool) {
         let left = self.held[GameKey::Left as usize];
         let right = self.held[GameKey::Right as usize];
-        if self.mode == HoldMode::Timeout && left && right {
+        if left && right {
             let left_seen = self.last_seen[GameKey::Left as usize];
             let right_seen = self.last_seen[GameKey::Right as usize];
             if left_seen >= right_seen {
@@ -356,14 +376,19 @@ mod tests {
     }
 
     #[test]
-    fn direction_conflict_resolution_does_not_apply_in_explicit_mode() {
+    fn direction_conflict_resolution_applies_in_explicit_mode_too() {
+        // Previously asserted the opposite: Explicit mode passed both directions
+        // through and let the player controller cancel them to a dead stop. That
+        // is the same freeze already fixed for Timeout mode, so the recency
+        // tie-break now runs in both modes.
         let mut collector = InputCollector::new(HoldMode::Explicit);
         collector.on_press(GameKey::Left, 0.0);
         collector.on_press(GameKey::Right, 0.02);
         let state = collector.finish_frame(0.02);
+        assert!(state.move_right, "the newer key must win immediately");
         assert!(
-            state.move_left && state.move_right,
-            "a real simultaneous hold must stay visible to the simulation"
+            !state.move_left,
+            "a genuine simultaneous hold must not cancel to a dead stop"
         );
     }
 
@@ -381,11 +406,16 @@ mod tests {
             collector.finish_frame(0.24).move_left,
             "the direction must survive an OS initial repeat delay"
         );
-        // The window is measured from the last event of any kind, which is the
-        // Jump repeat at t=0.20, not from Left's own last event at t=0.0.
-        assert!(collector.finish_frame(0.20 + HOLD_TIMEOUT - 0.01).move_left);
+        // Left's deadline was pushed to 2 x HOLD_TIMEOUT past the Jump repeat at
+        // t=0.20 that masked it, so it outlives Jump's own deadline at t=0.45
+        // rather than expiring in lockstep with it (that lockstep was Bug A).
         assert!(
-            !collector.finish_frame(0.20 + HOLD_TIMEOUT).move_left,
+            collector
+                .finish_frame(0.20 + 2.0 * HOLD_TIMEOUT - 0.01)
+                .move_left
+        );
+        assert!(
+            !collector.finish_frame(0.20 + 2.0 * HOLD_TIMEOUT).move_left,
             "the direction must still expire once input really falls silent"
         );
     }
@@ -429,13 +459,18 @@ mod tests {
         assert!(collector.finish_frame(last_jump).move_right);
 
         // Right's own last event was at t=0.0, far more than HOLD_TIMEOUT ago,
-        // yet it only lapses HOLD_TIMEOUT after Jump also goes quiet.
+        // yet its deadline was carried forward by every Jump repeat that masked
+        // it, so it lapses 2 x HOLD_TIMEOUT after Jump's final repeat.
         assert!(
             collector
-                .finish_frame(last_jump + HOLD_TIMEOUT - 0.01)
+                .finish_frame(last_jump + 2.0 * HOLD_TIMEOUT - 0.01)
                 .move_right
         );
-        assert!(!collector.finish_frame(last_jump + HOLD_TIMEOUT).move_right);
+        assert!(
+            !collector
+                .finish_frame(last_jump + 2.0 * HOLD_TIMEOUT)
+                .move_right
+        );
     }
 
     #[test]
@@ -462,19 +497,32 @@ mod tests {
             "the window must outlast Right's own event by more than a second"
         );
 
-        // Right's last event was at t=0.0, but expiry is measured from the last
-        // activity of any kind, which is Run's final repeat.
+        // Run was never masked, so its own deadline is one plain window past its
+        // final repeat. That part is unchanged.
         assert!(
             collector
                 .finish_frame(last_run + HOLD_TIMEOUT - 0.01)
-                .move_right
+                .run_held
         );
         let state = collector.finish_frame(last_run + HOLD_TIMEOUT);
+        assert!(!state.run_held);
+        // Right, however, was masked by every one of those repeats, so its
+        // deadline sits a further window out and it does not die alongside Run.
         assert!(
-            !state.move_right,
+            state.move_right,
+            "a masked direction must not expire in lockstep with its masker"
+        );
+        assert!(
+            collector
+                .finish_frame(last_run + 2.0 * HOLD_TIMEOUT - 0.01)
+                .move_right
+        );
+        assert!(
+            !collector
+                .finish_frame(last_run + 2.0 * HOLD_TIMEOUT)
+                .move_right,
             "the direction must expire once Run also falls silent"
         );
-        assert!(!state.run_held);
     }
 
     #[test]
@@ -501,6 +549,90 @@ mod tests {
             !collector.finish_frame(now).jump_held,
             "the hold itself must still lapse"
         );
+    }
+
+    #[test]
+    fn a_masked_direction_survives_its_masking_key_going_silent() {
+        let mut collector = InputCollector::new(HoldMode::Timeout);
+        collector.on_press(GameKey::Left, 0.0);
+        // Jump owns the repeat stream, so Left gets no events of its own even
+        // though it stays physically down.
+        for now in [0.05, 0.10, 0.15, 0.20] {
+            collector.on_press(GameKey::Jump, now);
+            assert!(collector.finish_frame(now).move_left);
+        }
+
+        // Jump is released at t=0.20 and the terminal never resumes Left's
+        // repeats. Under the old shared-silence timer both keys expired together
+        // at t=0.45, dropping a direction the player was still holding.
+        let state = collector.finish_frame(0.20 + HOLD_TIMEOUT);
+        assert!(!state.jump_held, "Jump's own window ends here");
+        assert!(
+            state.move_left,
+            "the still-held direction must not die with the key that masked it"
+        );
+
+        assert!(
+            collector
+                .finish_frame(0.20 + 2.0 * HOLD_TIMEOUT - 0.01)
+                .move_left
+        );
+        assert!(!collector.finish_frame(0.20 + 2.0 * HOLD_TIMEOUT).move_left);
+    }
+
+    #[test]
+    fn a_tapped_direction_hands_control_back_to_the_still_held_opposite() {
+        let mut collector = InputCollector::new(HoldMode::Timeout);
+        collector.on_press(GameKey::Right, 0.0);
+        assert!(collector.finish_frame(0.0).move_right);
+
+        // A quick opposite tap while Right stays down. Right is masked from here
+        // on, so its deadline moves to 0.10 + 2 x HOLD_TIMEOUT = 0.60.
+        collector.on_press(GameKey::Left, 0.10);
+        let state = collector.finish_frame(0.10);
+        assert!(state.move_left, "the newer key wins the recency tie-break");
+        assert!(!state.move_right);
+
+        // Left is released immediately and neither key sends another event.
+        assert!(collector.finish_frame(0.10 + HOLD_TIMEOUT - 0.01).move_left);
+        let state = collector.finish_frame(0.10 + HOLD_TIMEOUT);
+        assert!(
+            !state.move_left,
+            "the tap must stop outvoting Right after one window"
+        );
+        assert!(
+            state.move_right,
+            "Right reads through again with no fresh event of its own"
+        );
+        assert!(!collector.finish_frame(0.60).move_right);
+    }
+
+    #[test]
+    fn a_tapped_direction_never_freezes_movement_while_a_third_key_repeats() {
+        // Accepted, bounded limitation: with a third key repeating, both
+        // directions keep getting their deadlines extended, so a released tap
+        // can outvote a genuinely held opposite for longer than the two-key
+        // case above. What must never happen is the total freeze of Bug A.
+        let mut collector = InputCollector::new(HoldMode::Timeout);
+        collector.on_press(GameKey::Right, 0.0);
+        collector.on_press(GameKey::Left, 0.10);
+        assert!(collector.finish_frame(0.10).move_left);
+
+        let mut step = 3;
+        loop {
+            let now = f64::from(step) * 0.05;
+            if now > 1.5 {
+                break;
+            }
+            collector.on_press(GameKey::Jump, now);
+            let state = collector.finish_frame(now);
+            assert!(
+                state.move_left || state.move_right,
+                "movement froze entirely at t={now}"
+            );
+            assert!(state.jump_held);
+            step += 1;
+        }
     }
 
     #[test]
